@@ -1,155 +1,176 @@
-"""Preprocess football data with feature engineering"""
+"""Preprocessing with vectorized operations"""
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Tuple
+import logging
+from config import RAW_DIR as RAW, PROCESSED_DIR as PROCESSED, ELO_K_FACTOR, FORM_MATCHES_N, GOAL_STAT_MATCHES
 
-RAW = Path(__file__).resolve().parent.parent / "data" / "raw"
-PROCESSED = Path(__file__).resolve().parent.parent / "data" / "processed"
-PROCESSED.mkdir(parents=True, exist_ok=True)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class EloRating:
-    """Elo rating system"""
-    def __init__(self, k_factor: float = 20, initial_rating: float = 1500):
+    """Elo rating system for calculating team strength ratings"""
+    def __init__(self, k_factor: float = ELO_K_FACTOR, initial_rating: float = 1500):
+        # K-factor controls how much ratings change per match
         self.k_factor = k_factor
+        # Starting rating for new teams
         self.initial_rating = initial_rating
+        # Dictionary to store current ratings for each team
         self.ratings: Dict[str, float] = {}
     
     def get_rating(self, team: str) -> float:
+        """Get current rating for a team, or return initial rating if team is new"""
         return self.ratings.get(team, self.initial_rating)
     
     def expected_score(self, rating_a: float, rating_b: float) -> float:
+        """Calculate expected score for team A against team B using Elo formula"""
         return 1 / (1 + 10 ** ((rating_b - rating_a) / 400))
     
-    def update_ratings(self, home_team: str, away_team: str, result: int):
-        """Update ratings after match (2=home win, 1=draw, 0=away win)"""
-        home_rating = self.get_rating(home_team)
-        away_rating = self.get_rating(away_team)
-        home_expected = self.expected_score(home_rating, away_rating)
-        if result == 2:
-            home_actual, away_actual = 1.0, 0.0
-        elif result == 0:
-            home_actual, away_actual = 0.0, 1.0
-        else:
-            home_actual, away_actual = 0.5, 0.5
-        away_expected = 1 - home_expected
-        self.ratings[home_team] = home_rating + self.k_factor * (home_actual - home_expected)
-        self.ratings[away_team] = away_rating + self.k_factor * (away_actual - away_expected)
-        return home_rating, away_rating
+    def batch_update(self, matches: pd.DataFrame) -> pd.DataFrame:
+        """Update Elo ratings for all matches and add ratings to dataframe"""
+        ratings_before = []
+        
+        # Process each match chronologically
+        for _, row in matches.iterrows():
+            home_team, away_team, result = row['home_team'], row['away_team'], row['result']
+            home_rating = self.get_rating(home_team)
+            away_rating = self.get_rating(away_team)
+            
+            # Store ratings before update (for feature engineering)
+            ratings_before.append((home_rating, away_rating))
+            
+            # Calculate expected scores
+            home_expected = self.expected_score(home_rating, away_rating)
+            away_expected = 1 - home_expected
+            
+            # Determine actual scores based on match result
+            if result == 2:  # Home win
+                home_actual, away_actual = 1.0, 0.0
+            elif result == 0:  # Away win
+                home_actual, away_actual = 0.0, 1.0
+            else:  # Draw
+                home_actual, away_actual = 0.5, 0.5
+            
+            # Update ratings: new_rating = old_rating + K * (actual - expected)
+            self.ratings[home_team] = home_rating + self.k_factor * (home_actual - home_expected)
+            self.ratings[away_team] = away_rating + self.k_factor * (away_actual - away_expected)
+        
+        # Add Elo ratings as features to matches dataframe
+        ratings_df = pd.DataFrame(ratings_before, columns=['home_elo', 'away_elo'])
+        return pd.concat([matches.reset_index(drop=True), ratings_df], axis=1)
 
-def calculate_form(df: pd.DataFrame, n_matches: int = 5) -> pd.DataFrame:
-    """Calculate recent form (points from last N matches)"""
-    df = df.sort_values(['date']).copy()
-    home_matches = df[['date', 'home_team', 'result']].copy()
+def calculate_rolling_stats(df: pd.DataFrame, n_matches: int) -> pd.DataFrame:
+    """Calculate rolling form points and goal statistics for each team"""
+    # Create home team perspective: each match as if team played at home
+    home_matches = df[['date', 'home_team', 'result', 'home_goals', 'away_goals']].copy()
     home_matches['team'] = home_matches['home_team']
+    # Map result to points: 3 for win, 1 for draw, 0 for loss
     home_matches['points'] = home_matches['result'].map({2: 3, 1: 1, 0: 0})
-    away_matches = df[['date', 'away_team', 'result']].copy()
+    home_matches['goals_scored'] = home_matches['home_goals']
+    home_matches['goals_conceded'] = home_matches['away_goals']
+    
+    # Create away team perspective: each match as if team played away
+    away_matches = df[['date', 'away_team', 'result', 'away_goals', 'home_goals']].copy()
     away_matches['team'] = away_matches['away_team']
+    # Reverse point mapping for away team (result 0=away win, 2=home win)
     away_matches['points'] = away_matches['result'].map({0: 3, 1: 1, 2: 0})
-    all_matches = pd.concat([home_matches[['date', 'team', 'points']],
-                            away_matches[['date', 'team', 'points']]]).sort_values(['team', 'date'])
-    all_matches['form'] = all_matches.groupby('team')['points'].transform(
+    away_matches['goals_scored'] = away_matches['away_goals']
+    away_matches['goals_conceded'] = away_matches['home_goals']
+    
+    # Combine home and away perspectives into single view
+    all_matches = pd.concat([
+        home_matches[['date', 'team', 'points', 'goals_scored', 'goals_conceded']],
+        away_matches[['date', 'team', 'points', 'goals_scored', 'goals_conceded']]
+    ]).sort_values(['team', 'date'])
+    
+    # Calculate rolling statistics per team
+    grouped = all_matches.groupby('team')
+    # Form: sum of points from last n matches (shifted to exclude current match)
+    all_matches['form'] = grouped['points'].transform(
         lambda x: x.rolling(n_matches, min_periods=1).sum().shift(1))
+    # Average goals scored in last n matches
+    all_matches['avg_goals_scored'] = grouped['goals_scored'].transform(
+        lambda x: x.rolling(n_matches, min_periods=1).mean().shift(1))
+    # Average goals conceded in last n matches
+    all_matches['avg_goals_conceded'] = grouped['goals_conceded'].transform(
+        lambda x: x.rolling(n_matches, min_periods=1).mean().shift(1))
+    
     return all_matches
 
-def calculate_goal_statistics(df: pd.DataFrame, n_matches: int = 5) -> pd.DataFrame:
-    """Calculate rolling goal statistics"""
-    df = df.sort_values(['date']).copy()
-    home_stats = df[['date', 'home_team', 'home_goals', 'away_goals']].copy()
-    home_stats.columns = ['date', 'team', 'goals_scored', 'goals_conceded']
-    away_stats = df[['date', 'away_team', 'away_goals', 'home_goals']].copy()
-    away_stats.columns = ['date', 'team', 'goals_scored', 'goals_conceded']
-    all_stats = pd.concat([home_stats, away_stats]).sort_values(['team', 'date'])
-    grouped = all_stats.groupby('team')
-    all_stats['avg_goals_scored'] = grouped['goals_scored'].transform(
-        lambda x: x.rolling(n_matches, min_periods=1).mean().shift(1))
-    all_stats['avg_goals_conceded'] = grouped['goals_conceded'].transform(
-        lambda x: x.rolling(n_matches, min_periods=1).mean().shift(1))
-    return all_stats
-
-def calculate_head_to_head(df: pd.DataFrame, home_team: str, away_team: str,
-                          current_date: str, n_matches: int = 5) -> Dict:
-    """Calculate head-to-head statistics"""
-    h2h = df[(((df['home_team'] == home_team) & (df['away_team'] == away_team)) |
-              ((df['home_team'] == away_team) & (df['away_team'] == home_team))) &
-             (df['date'] < current_date)].tail(n_matches)
-    if len(h2h) == 0:
-        return {'h2h_home_wins': 0, 'h2h_draws': 0, 'h2h_away_wins': 0}
-    home_wins = len(h2h[(h2h['home_team'] == home_team) & (h2h['result'] == 2)]) + \
-                len(h2h[(h2h['away_team'] == home_team) & (h2h['result'] == 0)])
-    away_wins = len(h2h[(h2h['home_team'] == away_team) & (h2h['result'] == 2)]) + \
-                len(h2h[(h2h['away_team'] == away_team) & (h2h['result'] == 0)])
-    draws = len(h2h[h2h['result'] == 1])
-    return {'h2h_home_wins': home_wins, 'h2h_draws': draws, 'h2h_away_wins': away_wins}
-
 def build_features(input_file: str = "matches.csv", output_file: str = "train.csv") -> pd.DataFrame:
-    """Build feature set from match data"""
+    """Build feature set from raw match data"""
     input_path = RAW / input_file
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_path}")
+    
+    # Load and prepare raw data
+    logger.info("Loading data...")
     df = pd.read_csv(input_path)
-    df['date'] = pd.to_datetime(df['date'], format='%Y-%m-%d')
+    df['date'] = pd.to_datetime(df['date'])
+    # Sort by date to ensure chronological processing
     df = df.sort_values('date').reset_index(drop=True)
-    print(f"Loaded {len(df)} matches, {df['home_team'].nunique()} teams")
-    elo = EloRating(k_factor=20, initial_rating=1500)
-    print("Calculating form...")
-    form_df = calculate_form(df, n_matches=5)
-    print("Calculating goal statistics...")
-    goal_stats = calculate_goal_statistics(df, n_matches=5)
-    print("Building features...")
-    features_list = []
-    for idx, row in df.iterrows():
-        if idx % 100 == 0:
-            print(f"  {idx}/{len(df)}")
-        match_date = row['date']
-        home_team = row['home_team']
-        away_team = row['away_team']
-        home_elo, away_elo = elo.get_rating(home_team), elo.get_rating(away_team)
-        elo.update_ratings(home_team, away_team, row['result'])
-        home_form = form_df[(form_df['team'] == home_team) & (form_df['date'] == match_date)]['form'].values
-        home_form = home_form[0] if len(home_form) > 0 else 0
-        away_form = form_df[(form_df['team'] == away_team) & (form_df['date'] == match_date)]['form'].values
-        away_form = away_form[0] if len(away_form) > 0 else 0
-        home_goals_stats = goal_stats[(goal_stats['team'] == home_team) & (goal_stats['date'] == match_date)]
-        home_avg_scored = home_goals_stats['avg_goals_scored'].values[0] if len(home_goals_stats) > 0 else 1.0
-        home_avg_conceded = home_goals_stats['avg_goals_conceded'].values[0] if len(home_goals_stats) > 0 else 1.0
-        away_goals_stats = goal_stats[(goal_stats['team'] == away_team) & (goal_stats['date'] == match_date)]
-        away_avg_scored = away_goals_stats['avg_goals_scored'].values[0] if len(away_goals_stats) > 0 else 1.0
-        away_avg_conceded = away_goals_stats['avg_goals_conceded'].values[0] if len(away_goals_stats) > 0 else 1.0
-        h2h = calculate_head_to_head(df, home_team, away_team, match_date, n_matches=5)
-        home_last_match = df[((df['home_team'] == home_team) | (df['away_team'] == home_team)) &
-                             (df['date'] < match_date)]['date'].max()
-        days_since_home = (match_date - home_last_match).days if pd.notna(home_last_match) else 14
-        away_last_match = df[((df['home_team'] == away_team) | (df['away_team'] == away_team)) &
-                             (df['date'] < match_date)]['date'].max()
-        days_since_away = (match_date - away_last_match).days if pd.notna(away_last_match) else 14
-        features = {
-            'date': match_date, 'home_team': home_team, 'away_team': away_team,
-            'home_elo': home_elo, 'away_elo': away_elo, 'elo_diff': home_elo - away_elo,
-            'home_form': home_form, 'away_form': away_form, 'form_diff': home_form - away_form,
-            'home_avg_scored': home_avg_scored, 'home_avg_conceded': home_avg_conceded,
-            'away_avg_scored': away_avg_scored, 'away_avg_conceded': away_avg_conceded,
-            'attack_strength_diff': home_avg_scored - away_avg_conceded,
-            'h2h_home_wins': h2h['h2h_home_wins'], 'h2h_draws': h2h['h2h_draws'],
-            'h2h_away_wins': h2h['h2h_away_wins'],
-            'home_rest_days': days_since_home, 'away_rest_days': days_since_away,
-            'rest_advantage': days_since_home - days_since_away, 'target': row['result']
-        }
-        features_list.append(features)
-    features_df = pd.DataFrame(features_list)
+    
+    logger.info(f"Processing {len(df)} matches, {df['home_team'].nunique()} teams")
+    
+    # Step 1: Calculate Elo ratings for all teams
+    logger.info("Calculating Elo ratings...")
+    elo = EloRating(initial_rating=1500)
+    df_with_elo = elo.batch_update(df)
+    
+    # Step 2: Calculate form and goal statistics
+    logger.info("Calculating form and goal statistics...")
+    stats_df = calculate_rolling_stats(df, FORM_MATCHES_N)
+    
+    # Step 3: Merge all features
+    logger.info("Building features...")
+    
+    # Extract home team features (form, goals scored/conceded when playing at home)
+    home_features = stats_df[stats_df['team'].isin(df['home_team'])].rename(
+        columns={'form': 'home_form', 'avg_goals_scored': 'home_avg_scored', 
+                'avg_goals_conceded': 'home_avg_conceded'})
+    home_features = home_features[['date', 'team', 'home_form', 'home_avg_scored', 'home_avg_conceded']]
+    
+    # Extract away team features (form, goals scored/conceded when playing away)
+    away_features = stats_df[stats_df['team'].isin(df['away_team'])].rename(
+        columns={'form': 'away_form', 'avg_goals_scored': 'away_avg_scored',
+                'avg_goals_conceded': 'away_avg_conceded'})
+    away_features = away_features[['date', 'team', 'away_form', 'away_avg_scored', 'away_avg_conceded']]
+    
+    # Merge home and away features with main dataframe
+    features_df = df_with_elo.merge(
+        home_features, 
+        left_on=['date', 'home_team'], 
+        right_on=['date', 'team'], 
+        how='left'
+    ).merge(
+        away_features,
+        left_on=['date', 'away_team'], 
+        right_on=['date', 'team'],
+        how='left',
+        suffixes=('', '_away')
+    )
+    
+    # Step 4: Calculate derived features (differences between teams)
+    features_df['elo_diff'] = features_df['home_elo'] - features_df['away_elo']
+    features_df['form_diff'] = features_df['home_form'] - features_df['away_form']
+    features_df['attack_strength_diff'] = features_df['home_avg_scored'] - features_df['away_avg_conceded']
+    
+    # Handle missing values (for teams with no historical data)
     features_df = features_df.fillna(0)
+    
+    # Save processed data to CSV
     output_path = PROCESSED / output_file
     features_df.to_csv(output_path, index=False)
-    print(f"Saved {features_df.shape[0]} matches, {features_df.shape[1]} features")
-    numeric_cols = features_df.select_dtypes(include=[np.number]).columns
-    correlations = features_df[numeric_cols].corr()['target'].sort_values(ascending=False)
-    print(f"Top correlations: {correlations.head(5).to_dict()}")
+    
+    logger.info(f"Saved {len(features_df)} matches with {len(features_df.columns)} features")
+    
     return features_df
 
 if __name__ == "__main__":
     try:
         df = build_features()
-        print("Preprocessing complete")
+        logger.info("Preprocessing complete")
     except FileNotFoundError as e:
-        print(f"Error: {e}")
-        print("Run data_fetcher.py first")
+        logger.error(f"Error: {e}")
+        logger.info("Run data_fetcher.py first")

@@ -1,16 +1,19 @@
 """Test script for Football Prediction API"""
-import requests
 
-API_URL = "http://127.0.0.1:8000"
+import requests
+from config import API_HOST, API_PORT
+
+# API base URL
+API_URL = f"http://{API_HOST}:{API_PORT}"
 
 def test_health_check():
-    """Test API health"""
+    """Test API health endpoint"""
     response = requests.get(f"{API_URL}/health")
     print(f"Status: {response.status_code}")
     return response.status_code == 200
 
 def test_model_info():
-    """Get model info"""
+    """Test model information endpoint"""
     response = requests.get(f"{API_URL}/model/info")
     if response.status_code == 200:
         info = response.json()
@@ -19,7 +22,8 @@ def test_model_info():
         print(f"Error: {response.status_code}")
 
 def test_single_prediction():
-    """Test single prediction"""
+    """Test single match prediction endpoint"""
+    # Sample match features for testing
     payload = {
         "home_elo": 1750, "away_elo": 1450, "elo_diff": 300,
         "home_form": 12, "away_form": 5, "form_diff": 7,
@@ -38,11 +42,14 @@ def test_single_prediction():
     return False
 
 def run_all_tests():
-    """Run all tests"""
+    """Run all API tests"""
+    # Check if API is running
     if not test_health_check():
         print("API not running. Start with: uvicorn src.app:app --reload")
         return
+    # Test model info
     test_model_info()
+    # Test prediction
     test_single_prediction()
 
 if __name__ == "__main__":
