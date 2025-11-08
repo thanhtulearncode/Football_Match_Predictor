@@ -5,13 +5,15 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 import sys
-from typing import Dict, Optional, Tuple
-import time
+from typing import Dict, List, Optional
+import requests
+import json
+from datetime import datetime
 
 # Add src to path
 sys.path.append(str(Path(__file__).parent.parent))
 
-# Configure page first
+# Configure page
 st.set_page_config(
     page_title="Football Match Predictor", 
     page_icon="⚽", 
@@ -19,82 +21,103 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Cache configuration (cache resources for 1 hour to avoid reloading)
-@st.cache_resource(show_spinner=False, ttl=3600)
-def load_predictor():
-    """Load the ML predictor model (cached for performance)"""
+# API configuration
+API_BASE = "http://127.0.0.1:8000"
+
+@st.cache_data(ttl=300)
+def load_teams():
+    """Load available teams from API"""
     try:
-        from src.predictor import predictor
-        success = predictor.load_best_model()
-        if success:
-            st.success("✅ Model loaded successfully")
-            return predictor
-        else:
-            st.error("❌ Failed to load model")
-            return None
+        response = requests.get(f"{API_BASE}/teams")
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("teams", [])
     except Exception as e:
-        st.error(f"❌ Error loading predictor: {e}")
-        return None
+        st.error(f"Error loading teams: {e}")
+    return []
 
-# Cache data for 10 minutes
-@st.cache_data(show_spinner=False, ttl=600)
-def load_historical_data() -> pd.DataFrame:
-    """Load and cache historical match data"""
+@st.cache_data(ttl=300)
+def load_team_stats(team_name: str):
+    """Load statistics for a specific team"""
     try:
-        from src.config import PROCESSED_DIR
-        train_path = PROCESSED_DIR / "train.csv"
-        if train_path.exists():
-            df = pd.read_csv(train_path, parse_dates=['date'])
-            st.success(f"✅ Loaded {len(df)} historical matches")
-            return df
-        return pd.DataFrame()
-    except Exception as e:
-        st.error(f"❌ Error loading data: {e}")
-        return pd.DataFrame()
+        response = requests.get(f"{API_BASE}/teams/{team_name}/stats")
+        if response.status_code == 200:
+            return response.json()
+    except:
+        pass
+    return None
 
-@st.cache_data(show_spinner=False)
-def get_model_info(predictor_instance) -> Dict:
-    """Get model information"""
-    if not predictor_instance or not predictor_instance.model:
-        return {}
-    
-    info = {
-        "model_name": getattr(predictor_instance, 'model_name', 'Unknown'),
-        "model_type": type(predictor_instance.model).__name__,
-        "n_features": len(predictor_instance.feature_names) if predictor_instance.feature_names else 0,
-        "has_feature_importance": hasattr(predictor_instance.model, 'feature_importances_')
-    }
-    
-    # Add model-specific attributes
-    model_attrs = ['n_estimators', 'max_depth', 'learning_rate']
-    for attr in model_attrs:
-        if hasattr(predictor_instance.model, attr):
-            info[attr] = getattr(predictor_instance.model, attr)
-    
-    return info
-
-def calculate_derived_features(input_features: Dict) -> Dict:
-    """Calculate derived features from input (differences between teams)"""
-    return {
-        **input_features,
-        'elo_diff': input_features['home_elo'] - input_features['away_elo'],  # Elo difference
-        'form_diff': input_features['home_form'] - input_features['away_form'],  # Form difference
-        'attack_strength_diff': input_features['home_avg_scored'] - input_features['away_avg_conceded'],  # Attack strength
-        'rest_advantage': input_features['home_rest_days'] - input_features['away_rest_days']  # Rest advantage
-    }
-
-def predict_match(predictor_instance, input_features: Dict) -> Optional[Dict]:
-    """Make match prediction using loaded model"""
-    if not predictor_instance or not predictor_instance.model:
-        return None
-    
+def predict_teams(home_team: str, away_team: str, home_rest: int = 7, away_rest: int = 7):
+    """Predict match by team names"""
     try:
-        # Calculate derived features and predict
-        full_features = calculate_derived_features(input_features)
-        return predictor_instance.predict(full_features)
+        payload = {
+            "home_team": home_team,
+            "away_team": away_team,
+            "home_rest_days": home_rest,
+            "away_rest_days": away_rest
+        }
+        response = requests.post(f"{API_BASE}/predict/teams", json=payload)
+        if response.status_code == 200:
+            return response.json()
     except Exception as e:
         st.error(f"Prediction error: {e}")
-        return None
+    return None
+
+def predict_manual(
+    home_elo: float, away_elo: float,
+    home_form: float, away_form: float,
+    home_avg_scored: float, home_avg_conceded: float,
+    away_avg_scored: float, away_avg_conceded: float,
+    h2h_home_wins: int, h2h_draws: int, h2h_away_wins: int,
+    home_rest_days: int, away_rest_days: int
+):
+    """Predict match with manual features"""
+    try:
+        payload = {
+            "home_elo": home_elo,
+            "away_elo": away_elo,
+            "home_form": home_form,
+            "away_form": away_form,
+            "home_avg_scored": home_avg_scored,
+            "home_avg_conceded": home_avg_conceded,
+            "away_avg_scored": away_avg_scored,
+            "away_avg_conceded": away_avg_conceded,
+            "h2h_home_wins": h2h_home_wins,
+            "h2h_draws": h2h_draws,
+            "h2h_away_wins": h2h_away_wins,
+            "home_rest_days": home_rest_days,
+            "away_rest_days": away_rest_days
+        }
+        response = requests.post(f"{API_BASE}/predict", json=payload)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            st.error(f"API error: {response.status_code} - {response.text}")
+    except Exception as e:
+        st.error(f"Prediction error: {e}")
+    return None
+
+@st.cache_data(ttl=600)
+def load_upcoming_matches():
+    """Load upcoming matches"""
+    try:
+        response = requests.get(f"{API_BASE}/upcoming-matches")
+        if response.status_code == 200:
+            return response.json()
+    except:
+        pass
+    return None
+
+@st.cache_data(ttl=600)
+def predict_upcoming_matches():
+    """Predict upcoming matches"""
+    try:
+        response = requests.get(f"{API_BASE}/predict/upcoming")
+        if response.status_code == 200:
+            return response.json()
+    except Exception as e:
+        st.error(f"Error predicting upcoming matches: {e}")
+    return None
 
 def create_probability_chart(probabilities: Dict) -> go.Figure:
     """Create probability visualization"""
@@ -104,7 +127,7 @@ def create_probability_chart(probabilities: Dict) -> go.Figure:
         'home_win': 'Home Win'
     }
     
-    colors = ['#EF553B', '#636EFA', '#00CC96']  # Red, Blue, Green
+    colors = ['#EF553B', '#636EFA', '#00CC96']
     
     fig = go.Figure(go.Bar(
         x=list(probabilities.values()),
@@ -117,111 +140,206 @@ def create_probability_chart(probabilities: Dict) -> go.Figure:
     ))
     
     fig.update_layout(
-        title=dict(
-            text="Probability Distribution",
-            x=0.5,
-            xanchor='center',
-            font=dict(size=16)
-        ),
+        title=dict(text="Probability Distribution", x=0.5, xanchor='center'),
         height=250,
         showlegend=False,
-        xaxis=dict(
-            title="Probability",
-            range=[0, max(1.0, max(probabilities.values()) * 1.1)]
-        ),
+        xaxis=dict(title="Probability", range=[0, 1]),
         yaxis=dict(title="Outcome"),
         margin=dict(l=50, r=50, t=50, b=50)
     )
     
     return fig
 
-def create_outcome_distribution_chart(df: pd.DataFrame) -> Tuple[go.Figure, go.Figure]:
-    """Create outcome distribution charts"""
-    if df.empty:
-        return go.Figure(), go.Figure()
+def display_team_stats(team_name: str):
+    """Display team statistics"""
+    stats_data = load_team_stats(team_name)
+    if not stats_data:
+        st.warning(f"Statistics not available for {team_name}")
+        return
     
-    outcome_counts = df['target'].value_counts().sort_index()
-    outcome_names = ['Away Win', 'Draw', 'Home Win']
-    colors = ['#EF553B', '#636EFA', '#00CC96']
+    stats = stats_data['stats']
     
-    # Pie chart
-    pie_fig = go.Figure(go.Pie(
-        labels=outcome_names,
-        values=outcome_counts.values,
-        marker=dict(colors=colors),
-        textinfo='percent+label',
-        hole=0.3
-    ))
+    col1, col2, col3, col4 = st.columns(4)
     
-    pie_fig.update_layout(
-        title=dict(text="Match Outcome Distribution", x=0.5, xanchor='center'),
-        height=400
-    )
-    
-    # Bar chart
-    bar_fig = go.Figure(go.Bar(
-        x=outcome_names,
-        y=outcome_counts.values,
-        marker_color=colors,
-        text=outcome_counts.values,
-        textposition='auto'
-    ))
-    
-    bar_fig.update_layout(
-        title=dict(text="Match Count by Outcome", x=0.5, xanchor='center'),
-        xaxis_title="Outcome",
-        yaxis_title="Number of Matches",
-        height=400
-    )
-    
-    return pie_fig, bar_fig
+    with col1:
+        st.metric("Elo Rating", f"{stats.get('elo', 1500):.0f}")
+    with col2:
+        st.metric("Current Form", f"{stats.get('form', 0):.0f}")
+    with col3:
+        st.metric("Avg Goals Scored", f"{stats.get('avg_scored', 1.5):.2f}")
+    with col4:
+        st.metric("Avg Goals Conceded", f"{stats.get('avg_conceded', 1.5):.2f}")
 
-def create_feature_importance_chart(predictor_instance) -> go.Figure:
-    """Create feature importance visualization"""
-    if not predictor_instance or not hasattr(predictor_instance.model, 'feature_importances_'):
-        return go.Figure()
+def main():
+    st.title("⚽ Football Match Predictor")
     
-    # Get feature names
-    if predictor_instance.feature_names:
-        feature_names = predictor_instance.feature_names
-    else:
-        feature_names = [f"Feature_{i}" for i in range(len(predictor_instance.model.feature_importances_))]
-    
-    # Create importance DataFrame
-    importance_df = pd.DataFrame({
-        'Feature': feature_names,
-        'Importance': predictor_instance.model.feature_importances_
-    }).sort_values('Importance', ascending=True).tail(15)  # Top 15 features
-    
-    fig = go.Figure(go.Bar(
-        x=importance_df['Importance'],
-        y=importance_df['Feature'],
-        orientation='h',
-        marker_color='#1f77b4',
-        text=[f'{imp:.3f}' for imp in importance_df['Importance']],
-        textposition='auto'
-    ))
-    
-    fig.update_layout(
-        title=dict(
-            text="Top 15 Feature Importances",
-            x=0.5,
-            xanchor='center',
-            font=dict(size=16)
-        ),
-        height=500,
-        xaxis_title="Importance",
-        yaxis_title="Features",
-        margin=dict(l=150, r=50, t=50, b=50)
-    )
-    
-    return fig
+    # Sidebar
+    with st.sidebar:
+        st.title("Navigation")
+        page = st.radio(
+            "Choose Page",
+            ["Team Prediction", "Upcoming Matches", "Manual Prediction", "Analysis", "Model Info"]
+        )
+        
+        # API status
+        try:
+            health_response = requests.get(f"{API_BASE}/health")
+            if health_response.status_code == 200:
+                health_data = health_response.json()
+                st.success(f"✅ API: {health_data['status']}")
+                st.info(f"🤖 Model: {health_data.get('model_name', 'Unknown')}")
+                st.info(f"🏃 Teams: {health_data.get('teams_loaded', 0)}")
+                st.info(f"📅 Upcoming: {health_data.get('upcoming_matches_loaded', 0)}")
+            else:
+                st.error("❌ API not responding")
+        except:
+            st.error("❌ Cannot connect to API")
 
-def render_prediction_page(predictor_instance):
-    """Render the match prediction page with input forms"""
-    st.header("🎯 Match Prediction")
+    # Main content
+    if page == "Team Prediction":
+        render_team_prediction()
+    elif page == "Upcoming Matches":
+        render_upcoming_matches()
+    elif page == "Manual Prediction":
+        render_manual_prediction()
+    elif page == "Analysis":
+        render_analysis_page()
+    elif page == "Model Info":
+        render_model_info()
+
+def render_team_prediction():
+    """Render team-based prediction interface"""
+    st.header("🏟️ Predict by Team Names")
     
-    # Use columns for better layout (home team on left, away team on right)
+    # Load teams
+    teams = load_teams()
+    
+    if not teams:
+        st.error("No teams available. Please ensure the API is running and data is processed.")
+        return
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("🏠 Home Team")
+        home_team = st.selectbox("Select Home Team", teams, key="home_team_select")
+        home_rest = st.slider("Home Team Rest Days", 0, 30, 7, key="home_rest")
+        
+        if home_team:
+            with st.expander(f"📊 {home_team} Statistics"):
+                display_team_stats(home_team)
+
+    with col2:
+        st.subheader("✈️ Away Team")
+        away_team = st.selectbox("Select Away Team", teams, key="away_team_select")
+        away_rest = st.slider("Away Team Rest Days", 0, 30, 7, key="away_rest")
+        
+        if away_team:
+            with st.expander(f"📊 {away_team} Statistics"):
+                display_team_stats(away_team)
+    
+    # Quick predictions for popular matches
+    st.subheader("🚀 Quick Predictions")
+    popular_matches = [
+        ("Manchester United", "Liverpool"),
+        ("Arsenal", "Chelsea"),
+        ("Manchester City", "Tottenham Hotspur"),
+        ("Newcastle United", "Brighton & Hove Albion"),
+        ("West Ham United", "AFC Bournemouth")
+    ]
+    
+    # Filter available popular matches
+    available_popular_matches = [(h, a) for h, a in popular_matches if h in teams and a in teams]
+    
+    if available_popular_matches:
+        cols = st.columns(len(available_popular_matches))
+        for idx, (home, away) in enumerate(available_popular_matches):
+            with cols[idx]:
+                if st.button(f"{home}\nvs\n{away}", use_container_width=True, key=f"quick_{idx}"):
+                    result = predict_teams(home, away)
+                    if result:
+                        display_prediction_result(result)
+    
+    # Main prediction button
+    if st.button("🎯 Predict Match", type="primary", use_container_width=True):
+        if home_team == away_team:
+            st.error("Please select different teams")
+        else:
+            with st.spinner("Analyzing teams and generating prediction..."):
+                result = predict_teams(home_team, away_team, home_rest, away_rest)
+            
+            if result:
+                display_prediction_result(result)
+
+def render_upcoming_matches():
+    """Render upcoming matches prediction interface"""
+    st.header("📅 Upcoming Matches Predictions")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        # Create a container to hold the predictions
+        predictions_container = st.container()
+        
+        if st.button("🔄 Load & Predict Upcoming Matches", type="primary"):
+            with st.spinner("Loading and predicting upcoming matches..."):
+                predictions_data = predict_upcoming_matches()
+                
+            if predictions_data and predictions_data.get('predictions'):
+                predictions = predictions_data['predictions']
+                st.success(f"✅ Predicted {len(predictions)} upcoming matches")
+                
+                # Display predictions in the dedicated container
+                with predictions_container:
+                    for pred in predictions:
+                        with st.container():
+                            pred_col1, pred_col2, pred_col3 = st.columns([3, 2, 1])
+                            
+                            with pred_col1:
+                                st.write(f"**{pred['home_team']}** vs **{pred['away_team']}**")
+                                st.caption(f"Date: {pred['date']} | Competition: {pred.get('competition', 'Unknown')}")
+                            
+                            with pred_col2:
+                                outcome_emoji = {"Home Win": "🏠", "Draw": "🤝", "Away Win": "✈️"}
+                                st.metric(
+                                    "Prediction", 
+                                    f"{outcome_emoji.get(pred['prediction'], '⚽')} {pred['prediction']}"
+                                )
+                            
+                            with pred_col3:
+                                st.metric("Confidence", f"{pred['confidence']:.1%}")
+                                
+                                # Show probabilities
+                                probs = pred['probabilities']
+                                st.progress(int(probs['home_win'] * 100), text=f"Home: {probs['home_win']:.1%}")
+                                st.progress(int(probs['draw'] * 100), text=f"Draw: {probs['draw']:.1%}")
+                                st.progress(int(probs['away_win'] * 100), text=f"Away: {probs['away_win']:.1%}")
+                            
+                            st.divider()
+            else:
+                st.warning("No upcoming matches predictions available")
+    
+    with col2:
+        st.subheader("Custom Upcoming Matches")
+        st.info("Add custom matches to predict")
+        
+        with st.form("custom_match_form"):
+            home_team = st.text_input("Home Team")
+            away_team = st.text_input("Away Team")
+            match_date = st.date_input("Match Date")
+            competition = st.text_input("Competition (optional)")
+            
+            if st.form_submit_button("Add & Predict Custom Match"):
+                if home_team and away_team:
+                    # This would call the custom prediction endpoint
+                    st.info("Custom match prediction would be implemented here")
+                else:
+                    st.warning("Please enter both teams")
+
+def render_manual_prediction():
+    """Render manual feature input prediction"""
+    st.header("🎯 Manual Prediction")
+    
     col1, col2 = st.columns(2)
     
     with col1:
@@ -240,7 +358,7 @@ def render_prediction_page(predictor_instance):
         away_avg_conceded = st.number_input("Avg Goals Conceded", 0.0, 5.0, 1.5, 0.1, key="away_conceded")
         away_rest = st.number_input("Rest Days", 0, 30, 7, key="away_rest")
 
-    # Head-to-head section
+    # Head-to-head
     st.subheader("🤝 Head-to-Head Statistics")
     h2h_col1, h2h_col2, h2h_col3 = st.columns(3)
     with h2h_col1:
@@ -250,170 +368,144 @@ def render_prediction_page(predictor_instance):
     with h2h_col3:
         h2h_away = st.number_input("Away Team Wins", 0, 20, 1, key="h2h_away")
 
-    # Input features
-    input_features = {
-        'home_elo': home_elo,
-        'away_elo': away_elo,
-        'home_form': home_form,
-        'away_form': away_form,
-        'home_avg_scored': home_avg_scored,
-        'home_avg_conceded': home_avg_conceded,
-        'away_avg_scored': away_avg_scored,
-        'away_avg_conceded': away_avg_conceded,
-        'h2h_home_wins': h2h_home,
-        'h2h_draws': h2h_draw,
-        'h2h_away_wins': h2h_away,
-        'home_rest_days': home_rest,
-        'away_rest_days': away_rest
-    }
-
-    # Prediction button
-    if st.button("🚀 Predict Match Outcome", type="primary", use_container_width=True):
-        with st.spinner("Analyzing match data..."):
-            time.sleep(0.5)  # Small delay for better UX
-            result = predict_match(predictor_instance, input_features)
-        
-        if result:
-            # Display results
-            outcome_color = {
-                "Away Win": "red",
-                "Draw": "blue", 
-                "Home Win": "green"
-            }.get(result['prediction'], "gray")
+    if st.button("🚀 Predict Match", type="primary", use_container_width=True):
+        # Validate head-to-head totals
+        h2h_total = h2h_home + h2h_draw + h2h_away
+        if h2h_total > 20:
+            st.error("Total head-to-head matches cannot exceed 20")
+        else:
+            with st.spinner("Analyzing features and generating prediction..."):
+                result = predict_manual(
+                    home_elo=home_elo,
+                    away_elo=away_elo,
+                    home_form=home_form,
+                    away_form=away_form,
+                    home_avg_scored=home_avg_scored,
+                    home_avg_conceded=home_avg_conceded,
+                    away_avg_scored=away_avg_scored,
+                    away_avg_conceded=away_avg_conceded,
+                    h2h_home_wins=h2h_home,
+                    h2h_draws=h2h_draw,
+                    h2h_away_wins=h2h_away,
+                    home_rest_days=int(home_rest),
+                    away_rest_days=int(away_rest)
+                )
             
-            st.success(f"## **Prediction: :{outcome_color}[{result['prediction']}]**")
-            
-            # Metrics
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Confidence", f"{result['confidence']:.1%}")
-            with col2:
-                st.metric("Model Used", result['model_used'])
-            with col3:
-                st.metric("Prediction Code", result['prediction_code'])
-            
-            # Probability chart
-            st.plotly_chart(create_probability_chart(result['probabilities']), use_container_width=True)
-            
-            # Feature details
-            with st.expander("📊 View Feature Details"):
-                derived = calculate_derived_features(input_features)
-                st.json({k: round(v, 3) if isinstance(v, float) else v for k, v in derived.items()})
+            if result:
+                display_prediction_result(result)
 
 def render_analysis_page():
-    """Render data analysis page with statistics and charts"""
+    """Render data analysis page"""
     st.header("📈 Data Analysis")
     
-    # Load historical match data
-    df = load_historical_data()
-    if df.empty:
-        st.warning("No historical data available. Run preprocess.py first.")
-        return
+    # Load teams for analysis
+    teams = load_teams()
     
-    # Display overview metrics in columns
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Total Matches", len(df))
-    with col2:
-        st.metric("Unique Teams", df['home_team'].nunique())
-    with col3:
-        st.metric("Date Range", f"{df['date'].min().strftime('%Y-%m-%d')} to {df['date'].max().strftime('%Y-%m-%d')}")
-    with col4:
-        st.metric("Features Available", len(df.columns) - 4)  # Exclude metadata columns
+    if teams:
+        selected_team = st.selectbox("Select Team for Analysis", teams)
+        if selected_team:
+            stats_data = load_team_stats(selected_team)
+            if stats_data:
+                stats = stats_data['stats']
+                
+                # Create metrics
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Elo Rating", f"{stats.get('elo', 1500):.0f}")
+                with col2:
+                    st.metric("Current Form", f"{stats.get('form', 0):.0f}/15")
+                with col3:
+                    st.metric("Win Rate", f"{stats.get('win_rate', 0.33):.1%}")
+                with col4:
+                    st.metric("Matches Played", stats.get('total_matches', 0))
+                
+                # Goal statistics
+                st.subheader("Goal Statistics")
+                goal_data = {
+                    'Metric': ['Avg Scored', 'Avg Conceded', 'Goal Difference'],
+                    'Value': [
+                        stats.get('avg_scored', 1.5),
+                        stats.get('avg_conceded', 1.5),
+                        stats.get('goal_difference', 0)
+                    ]
+                }
+                st.bar_chart(pd.DataFrame(goal_data).set_index('Metric'))
     
-    # Charts
-    st.subheader("Match Outcome Analysis")
-    pie_fig, bar_fig = create_outcome_distribution_chart(df)
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.plotly_chart(pie_fig, use_container_width=True)
-    with col2:
-        st.plotly_chart(bar_fig, use_container_width=True)
-    
-    # Additional analysis
-    with st.expander("📋 View Sample Data"):
-        st.dataframe(df.head(100), use_container_width=True)
+    else:
+        st.warning("No data available for analysis")
 
-def render_model_info_page(predictor_instance):
-    """Render model information page with details and feature importance"""
+def render_model_info():
+    """Render model information page"""
     st.header("🤖 Model Information")
     
-    # Get model information
-    model_info = get_model_info(predictor_instance)
-    if not model_info:
-        st.error("No model information available")
-        return
+    try:
+        # Get model info
+        response = requests.get(f"{API_BASE}/model/info")
+        if response.status_code == 200:
+            model_info = response.json()
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Model Name", model_info.get('model_name', 'Unknown'))
+            with col2:
+                st.metric("Model Type", model_info.get('model_type', 'Unknown'))
+            with col3:
+                st.metric("Features", model_info.get('n_features', 0))
+            with col4:
+                st.metric("Has Feature Importance", "Yes" if model_info.get('has_feature_importance') else "No")
+            
+            # Feature importance
+            if model_info.get('has_feature_importance'):
+                st.subheader("Feature Importance")
+                importance_response = requests.get(f"{API_BASE}/model/feature_importance")
+                if importance_response.status_code == 200:
+                    importance_data = importance_response.json()
+                    importance_df = pd.DataFrame(importance_data['feature_importance'])
+                    
+                    fig = px.bar(
+                        importance_df.head(10),
+                        x='importance',
+                        y='feature',
+                        orientation='h',
+                        title="Top 10 Most Important Features",
+                        color='importance'
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+        
+        else:
+            st.error("Could not load model information")
+            
+    except Exception as e:
+        st.error(f"Error loading model info: {e}")
+
+def display_prediction_result(result: Dict):
+    """Display prediction results"""
+    st.success(f"## **Prediction: {result['prediction']}**")
     
-    # Display model overview metrics
+    # Metrics
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Model Name", model_info.get('model_name', 'Unknown'))
+        st.metric("Confidence", f"{result['confidence']:.1%}")
     with col2:
-        st.metric("Model Type", model_info.get('model_type', 'Unknown'))
+        st.metric("Model Used", result['model_used'])
     with col3:
-        st.metric("Number of Features", model_info.get('n_features', 0))
+        st.metric("Prediction Code", result['prediction_code'])
     with col4:
-        st.metric("Feature Importance", "Available" if model_info.get('has_feature_importance') else "Not Available")
+        outcome_map = {"Home Win": "🏠", "Draw": "🤝", "Away Win": "✈️"}
+        st.metric("Outcome", outcome_map.get(result['prediction'], "⚽"))
     
-    # Feature importance chart
-    if model_info.get('has_feature_importance'):
-        st.subheader("Feature Importance Analysis")
-        importance_fig = create_feature_importance_chart(predictor_instance)
-        st.plotly_chart(importance_fig, use_container_width=True)
-    else:
-        st.info("This model type doesn't support feature importance visualization.")
+    # Probability chart
+    st.plotly_chart(create_probability_chart(result['probabilities']), use_container_width=True)
     
-    # Model parameters
-    st.subheader("Model Parameters")
-    param_cols = [col for col in ['n_estimators', 'max_depth', 'learning_rate'] if col in model_info]
-    if param_cols:
-        cols = st.columns(len(param_cols))
-        for idx, param in enumerate(param_cols):
-            with cols[idx]:
-                st.metric(param.replace('_', ' ').title(), model_info[param])
-    else:
-        st.info("No specific parameters available for this model type.")
-
-def main():
-    """Main application entry point with sidebar navigation"""
-    # Sidebar with loading states and navigation
-    with st.sidebar:
-        st.title("⚽ Football Predictor")
-        st.markdown("---")
-        
-        # Load ML model (cached)
-        with st.spinner("Loading model..."):
-            predictor_instance = load_predictor()
-        
-        # Page navigation radio buttons
-        page = st.radio(
-            "Navigation",
-            ["🎯 Prediction", "📈 Analysis", "🤖 Model Info"],
-            index=0
-        )
-        
-        # Display model status in sidebar
-        if predictor_instance:
-            st.markdown("---")
-            st.subheader("Model Status")
-            st.success(f"**Model**: {getattr(predictor_instance, 'model_name', 'Unknown')}")
-            st.info(f"**Features**: {len(predictor_instance.feature_names) if predictor_instance.feature_names else 0}")
-        
-        st.markdown("---")
-        st.caption("Football Match Prediction Dashboard v2.0")
-
-    # Main content area - render selected page
-    try:
-        if page == "🎯 Prediction":
-            render_prediction_page(predictor_instance)
-        elif page == "📈 Analysis":
-            render_analysis_page()
-        elif page == "🤖 Model Info":
-            render_model_info_page(predictor_instance)
-    except Exception as e:
-        st.error(f"An error occurred: {e}")
-        st.info("Please check if all required services are running properly.")
+    # Feature details
+    with st.expander("📊 View Feature Details"):
+        if 'features_used' in result:
+            features = result['features_used']
+            feature_df = pd.DataFrame({
+                'Feature': list(features.keys()),
+                'Value': list(features.values())
+            })
+            st.dataframe(feature_df, use_container_width=True)
 
 if __name__ == "__main__":
     main()
