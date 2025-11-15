@@ -7,7 +7,7 @@ import time
 import os
 from dotenv import load_dotenv
 import logging
-from config import RAW_DIR, UPCOMING_MATCHES_FILE, TEAM_NAME_MAPPINGS
+from .config import RAW_DIR, UPCOMING_MATCHES_FILE, TEAM_NAME_MAPPINGS
 
 load_dotenv()
 
@@ -122,70 +122,78 @@ class FootballDataFetcher:
         logger.info(f"📝 Created sample upcoming matches: {UPCOMING_MATCHES_FILE}")
         return df
 
-    def fetch_historical_matches(self, competition_code: str = "PL", season: int = 2023):
+    def fetch_historical_matches(self, competition_code: str = "PL", seasons = None):
         """Fetch historical matches for training"""
         if not self.api_key:
             logger.error("API key required for historical matches")
             return pd.DataFrame()
-        
-        try:
-            url = f"{self.BASE_URL}/competitions/{competition_code}/matches"
-            params = {
-                "season": season,
-                "status": "FINISHED"
-            }
-            
-            logger.info(f"Fetching historical matches for {competition_code} {season}...")
-            response = requests.get(url, headers=self.headers, params=params)
-            
-            if response.status_code == 429:
-                logger.info("Rate limit hit, waiting 60 seconds...")
-                time.sleep(60)
+        # Default to last 3 seasons if not specified
+        if seasons is None:
+            current_year = datetime.now().year
+            # Football seasons typically start in August, so adjust accordingly
+            seasons = list(range(max(2018, current_year - 4), current_year + 1))
+        elif isinstance(seasons, int):
+            seasons = [seasons]
+        all_matches = []
+        for season in seasons:
+            try:
+                url = f"{self.BASE_URL}/competitions/{competition_code}/matches"
+                params = {
+                    "season": season,
+                    "status": "FINISHED"
+                }
+                logger.info(f"Fetching historical matches for {competition_code} {season}...")
                 response = requests.get(url, headers=self.headers, params=params)
-            
-            response.raise_for_status()
-            data = response.json()
-            
-            matches = []
-            for match in data.get("matches", []):
-                if match["status"] != "FINISHED":
-                    continue
+                
+                if response.status_code == 429:
+                    logger.info("Rate limit hit, waiting 60 seconds...")
+                    time.sleep(60)
+                    response = requests.get(url, headers=self.headers, params=params)
+                response.raise_for_status()
+                data = response.json()
+                season_matches = []
+                for match in data.get("matches", []):
+                    if match["status"] != "FINISHED":
+                        continue
+                        
+                    home_team = self.normalize_team_name(match["homeTeam"]["name"])
+                    away_team = self.normalize_team_name(match["awayTeam"]["name"])
                     
-                home_team = self.normalize_team_name(match["homeTeam"]["name"])
-                away_team = self.normalize_team_name(match["awayTeam"]["name"])
+                    # Determine result
+                    home_goals = match["score"]["fullTime"]["home"] or 0
+                    away_goals = match["score"]["fullTime"]["away"] or 0
+                    
+                    if home_goals > away_goals:
+                        result = 2  # Home win
+                    elif home_goals < away_goals:
+                        result = 0  # Away win
+                    else:
+                        result = 1  # Draw
+                    
+                    season_matches.append({
+                        "date": match["utcDate"][:10],
+                        "home_team": home_team,
+                        "away_team": away_team,
+                        "home_goals": home_goals,
+                        "away_goals": away_goals,
+                        "result": result,
+                        "competition": match["competition"]["name"],
+                        "season": season
+                    })
                 
-                # Determine result
-                home_goals = match["score"]["fullTime"]["home"] or 0
-                away_goals = match["score"]["fullTime"]["away"] or 0
-                
-                if home_goals > away_goals:
-                    result = 2  # Home win
-                elif home_goals < away_goals:
-                    result = 0  # Away win
-                else:
-                    result = 1  # Draw
-                
-                matches.append({
-                    "date": match["utcDate"][:10],
-                    "home_team": home_team,
-                    "away_team": away_team,
-                    "home_goals": home_goals,
-                    "away_goals": away_goals,
-                    "result": result,
-                    "competition": match["competition"]["name"]
-                })
-            
-            df = pd.DataFrame(matches)
-            if not df.empty:
-                output_path = RAW_DIR / "matches.csv"
-                df.to_csv(output_path, index=False)
-                logger.info(f"✅ Saved {len(df)} historical matches to {output_path}")
-            
-            return df
-            
-        except Exception as e:
-            logger.error(f"Error fetching historical matches: {e}")
-            return pd.DataFrame()
+                all_matches.extend(season_matches)
+                logger.info(f"✅ Fetched {len(season_matches)} matches for season {season}")
+                # Small delay between seasons to avoid rate limiting
+                time.sleep(1)
+            except Exception as e:
+                logger.error(f"Error fetching historical matches for season {season}: {e}")
+                continue
+        df = pd.DataFrame(all_matches)
+        if not df.empty:
+            output_path = RAW_DIR / "matches.csv"
+            df.to_csv(output_path, index=False)
+            logger.info(f"✅ Saved {len(df)} total historical matches from {len(seasons)} seasons to {output_path}")
+        return df
 
 def main():
     """Main function to fetch data"""
@@ -201,9 +209,13 @@ def main():
     
     # Fetch historical matches if API key available
     if fetcher.api_key:
-        print("📊 Fetching historical matches...")
+        print("📊 Fetching historical matches (multiple seasons)...")
         historical_matches = fetcher.fetch_historical_matches()
-        print(f"✅ Historical matches: {len(historical_matches)}")
+        if not historical_matches.empty:
+            seasons = historical_matches['season'].unique() if 'season' in historical_matches.columns else []
+            print(f"✅ Historical matches: {len(historical_matches)} from {len(seasons)} season(s)")
+        else:
+            print("⚠️  No historical matches fetched")
     else:
         print("ℹ️  No API key - using existing historical data")
     

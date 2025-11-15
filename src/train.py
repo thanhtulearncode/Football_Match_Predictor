@@ -8,10 +8,14 @@ from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score, classification_report, log_loss
 from sklearn.model_selection import TimeSeriesSplit
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.calibration import CalibratedClassifierCV
+
 import joblib
 import logging
 from typing import Dict, Tuple, Any, List
-from config import PROCESSED_DIR as PROCESSED, MODELS_DIR as MODELS, RANDOM_STATE, TARGET_COLUMN
+from .config import PROCESSED_DIR as PROCESSED, MODELS_DIR as MODELS, RANDOM_STATE, TARGET_COLUMN
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,6 +33,12 @@ try:
     MODEL_IMPORTS['LightGBM'] = LGBMClassifier
 except ImportError:
     logger.warning("LightGBM not available")
+
+try:
+    from catboost import CatBoostClassifier
+    MODEL_IMPORTS['CatBoost'] = CatBoostClassifier
+except ImportError:
+    logger.warning("CatBoost not available")
 
 class ModelTrainer:
     """Train and compare multiple ML models for football prediction"""
@@ -56,11 +66,20 @@ class ModelTrainer:
                 }
             },
             'LogisticRegression': {
-                'class': LogisticRegression,
+                'class': Pipeline,
                 'params': {
-                    'max_iter': 2000,         # Maximum iterations
-                    'random_state': RANDOM_STATE,
-                    'n_jobs': -1
+                    'steps': [
+                        ('scaler', StandardScaler()),
+                        ('model', CalibratedClassifierCV(
+                            estimator=LogisticRegression(
+                                max_iter=3000,
+                                random_state=RANDOM_STATE,
+                                n_jobs=-1
+                            ),
+                            method='sigmoid',  
+                            cv=5              
+                        ))
+                    ]
                 }
             }
         }
@@ -89,6 +108,18 @@ class ModelTrainer:
                     'random_state': RANDOM_STATE,
                     'verbose': -1,            # Suppress output
                     'n_jobs': -1
+                }
+            }
+        
+        if 'CatBoost' in MODEL_IMPORTS:
+            self.models_config['CatBoost'] = {
+                'class': MODEL_IMPORTS['CatBoost'],
+                'params': {
+                    'n_estimators': 200,
+                    'max_depth': 6,
+                    'learning_rate': 0.1,
+                    'random_state': RANDOM_STATE,
+                    'verbose': 0,  
                 }
             }
 
@@ -213,7 +244,10 @@ class ModelTrainer:
             metrics = self.evaluate_model(model, X_train, y_train, X_test, y_test)
             
             # Log parameters and metrics to MLflow
-            mlflow.log_params(model_params)
+            if model_name == 'LogisticRegression':
+                mlflow.log_params(model_params['steps'][1][1].get_params())
+            else:
+                mlflow.log_params(model_params)
             mlflow.log_metrics(metrics)
             mlflow.sklearn.log_model(model, "model")
             

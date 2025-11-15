@@ -1,7 +1,7 @@
 """Test script for Football Prediction API"""
 
 import requests
-from config import API_HOST, API_PORT
+from .config import API_HOST, API_PORT
 
 # API base URL
 API_URL = f"http://{API_HOST}:{API_PORT}"
