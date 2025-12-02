@@ -17,6 +17,7 @@ data/predictions/
 # Models
 models/*.pkl
 models/*.csv
+catboost_info/
 
 # MLflow
 mlruns/
@@ -42,3 +43,4 @@ Thumbs.db
 # Logs
 *.log
 
+/web/node_modules/

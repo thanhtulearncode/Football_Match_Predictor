@@ -1,163 +1,126 @@
-# ⚽ Football Match Predictor
+# PL Oracle: Football Match Predictor
 
-A machine learning system for predicting football match outcomes with team-based predictions and upcoming match analysis.
+A Machine Learning application that predicts Premier League match outcomes. It features a FastAPI backend for serving predictions and a modern React (Vite) dashboard for visualization.
 
-## 🚀 Features
+## Architecture
 
-- **Team-based Predictions**: Predict matches by entering team names
-- **Multiple ML Models**: RandomForest, XGBoost, LightGBM, GradientBoosting, LogisticRegression
-- **REST API**: Full programmatic access via FastAPI
-- **Web Dashboard**: Interactive Streamlit interface
-- **Advanced Analytics**: Elo ratings, form, goal statistics, head-to-head records
-- **Batch Predictions**: Predict multiple matches at once
+- **Backend**: Python, FastAPI, Scikit-Learn/XGBoost
+- **Frontend**: React, Vite, Tailwind CSS
+- **Data**: Scraped from FBref (Pandas, BeautifulSoup),
+- **Deployment**: Docker & Docker Compose
 
-## 🛠️ Quick Start
+## Quick Start (Local Development)
 
-### Installation
+To run the project locally, you need two terminal windows open simultaneously (one for the API, one for the Web Interface).
+
+### Setup Prerequisites
+
+**Backend (Python):**
 
 ```bash
 # Create virtual environment
 python -m venv venv
-venv\Scripts\activate  # Windows
-source venv/bin/activate  # Linux/Mac
+
+# Activate it
+# Windows:
+venv\Scripts\activate
+
+# Mac/Linux:
+source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
 ```
 
-### Setup & Run
+**Frontend (Node.js):**
 
 ```bash
-# 1. Set up environment variables (create .env file)
-FOOTBALL_DATA_API_KEY=your_api_key_here
-
-# 2. Fetch data
-python src/data_fetcher.py
-
-# 3. Preprocess and train models
-python src/preprocess.py
-python src/train.py
-
-# 4. Start API server
-uvicorn src.app:app --reload
-
-# 5. Launch web dashboard (in new terminal)
-streamlit run src/dashboard.py
+cd web
+npm install
+cd ..
 ```
 
-## 📡 API Endpoints
+### Run the Application
 
-**Core:**
-- `GET /health` - Health check
-- `GET /model/info` - Model information
-- `GET /model/feature_importance` - Feature importance
+**Terminal A: The Brain (Backend)**
+This starts the Prediction API.
 
-**Predictions:**
-- `POST /predict/teams` - Predict by team names (recommended)
-- `POST /predict` - Predict with manual features
-- `POST /predict/batch` - Batch predictions
-- `GET /predict/upcoming` - Predict all upcoming matches
-
-**Teams & Data:**
-- `GET /teams` - List available teams
-- `GET /teams/{team_name}/stats` - Get team statistics
-- `GET /upcoming-matches` - Get match schedule
-
-## 🎮 Usage Examples
-
-### Team-based Prediction (Recommended)
-
-```python
-import requests
-
-response = requests.post("http://localhost:8000/predict/teams", json={
-    "home_team": "Manchester United",
-    "away_team": "Liverpool",
-    "home_rest_days": 7,
-    "away_rest_days": 7
-})
-print(response.json())
+```bash
+# Make sure venv is active
+python -m uvicorn src.api.app:app --reload --port 8000
 ```
 
-### Manual Feature Prediction
+API will run at: http://127.0.0.1:8000
 
-```python
-import requests
+**Terminal B: The Face (Frontend)**
+This starts the Dashboard.
 
-response = requests.post("http://localhost:8000/predict", json={
-    "home_elo": 1650, "away_elo": 1580,
-    "home_form": 10, "away_form": 7,
-    "home_avg_scored": 1.8, "home_avg_conceded": 1.0,
-    "away_avg_scored": 1.3, "away_avg_conceded": 1.5,
-    "h2h_home_wins": 3, "h2h_draws": 1, "h2h_away_wins": 1,
-    "home_rest_days": 7, "away_rest_days": 7
-})
-print(response.json())
+```bash
+cd web
+npm run dev
 ```
 
-## 📊 Dashboard
+Dashboard will run at: http://localhost:3000
 
-The Streamlit dashboard provides:
-- Team selection and predictions
-- Upcoming match analysis
-- Team statistics and analytics
-- Model performance metrics
-- Feature importance visualization
+> **Note:** The dashboard automatically detects your API address. If you open the dashboard on localhost, it talks to localhost:8000. If you open it on 127.0.0.1, it talks to 127.0.0.1:8000.
 
-## 🔧 Configuration
+## Quick Start (Docker Production)
 
-Create a `.env` file:
+If you want to run the exact system that would run on a server (simulating production), use Docker. This requires no manual dependency installation.
 
-```env
-FOOTBALL_DATA_API_KEY=your_api_key_here
-API_HOST=127.0.0.1
-API_PORT=8000
+```bash
+# Build and Start
+docker-compose up --build
 ```
 
-### Supported Competitions
+- Web Dashboard: http://localhost:3000
+- API Docs: http://localhost:8000/docs
 
-- Premier League (PL)
-- More leagues can be added via configuration
+## ML Pipeline Operations
 
-## 🏗️ System Architecture
+The prediction model relies on up-to-date data. Run the pipeline periodically to scrape new match results and retrain the model.
 
-```
-Data Sources → Feature Engineering → ML Models → API → Dashboard
-    ↓              ↓                  ↓         ↓        ↓
- Football     Elo Ratings,        Ensemble   FastAPI  Streamlit
- Data API     Form, H2H, etc.     Models            Interactive UI
-```
+**Run the full pipeline (Scrape → Process → Train):**
 
-## 📈 Model Performance
-
-- **Accuracy**: ~55% (beats random chance of 33%)
-- **Models**: 5 algorithms with automatic best model selection
-- **Features**: 25+ engineered features (Elo ratings, form, goals, head-to-head, rest days, win rates)
-
-## 🏗️ Project Structure
-
-```
-src/
-├── app.py                 # FastAPI application
-├── dashboard.py           # Streamlit dashboard
-├── data_fetcher.py        # Data collection
-├── preprocess.py          # Feature engineering
-├── train.py              # Model training
-├── predictor.py          # Prediction logic
-└── config.py            # Configuration
+```bash
+python scripts/run_pipeline.py
 ```
 
-## 🆘 Troubleshooting
+**Check specific team predictions via CLI:**
 
-- **No teams available**: Run `preprocess.py` after data fetching
-- **API connection errors**: Ensure all services are running
-- **Prediction errors**: Check team names are in available list
-- **Health check**: `GET /health`
+```bash
+python scripts/show_predictions.py
+```
 
-## 📄 License
+## Project Structure
 
-This project is for educational purposes. Please ensure compliance with data source terms of service.
+```
+├── data/              # CSV Storage
+│   ├── raw/          # Scraped data
+│   └── processed/    # Cleaned features
+├── models/           # Saved .pkl models & encoders
+├── scripts/          # Automation scripts (pipeline)
+├── src/              # Python Source Code
+│   ├── api/          # FastAPI Endpoints
+│   └── pipeline/     # ML Logic (Scraping, Feature Eng, Training)
+└── web/              # React Application
+    ├── src/          # React Components
+    └── public/       # Static Assets
+```
 
----
+## Troubleshooting
 
-**Happy Predicting!** ⚽🎯
+### 1. "Connection Error" in Dashboard
+
+- Ensure Terminal A (Backend) is actually running.
+- Check if the backend port (8000) is blocked.
+- Ensure you aren't mixing localhost and 127.0.0.1.
+
+### 2. 404 Not Found on Frontend
+
+- Ensure `web/index.html` exists in the root of the web folder.
+- Ensure you are running `npm run dev` from inside the `web/` directory.
+
+### 3. "FutureWarning: Importing pandas-specific..."
+
+This is a harmless warning from the pandera library in the backend logs. It does not affect functionality.

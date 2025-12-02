@@ -1,0 +1,30 @@
+version: "3.8"
+
+services:
+  # --- Service A: Backend (FastAPI) ---
+  api:
+    build:
+      context: . # Root context so it can see /src, /data, /config
+      dockerfile: deploy/api.Dockerfile
+    container_name: pl_oracle_api
+    ports:
+      - "8080:8000"
+    volumes:
+      # Mount data volumes so training/predictions persist
+      - ./data:/app/data
+      - ./models:/app/models
+    env_file:
+      - .env
+    restart: always
+
+  # --- Service B: Frontend (React + Nginx) ---
+  web:
+    build:
+      context: ./web # Build inside the 'web' folder
+      dockerfile: Dockerfile # Uses web/Dockerfile
+    container_name: pl_oracle_web
+    ports:
+      - "3000:80" # Map port 3000 on laptop to 80 in container
+    depends_on:
+      - api # Wait for API to start first
+    restart: always
