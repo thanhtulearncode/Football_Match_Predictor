@@ -158,14 +158,12 @@ def show_predictions(limit=20):
         # Load data
         model, upcoming = _load_model_and_data()
         
-        # Validate and prepare
-        _validate_features(upcoming)
-        prepared = _prepare_features(upcoming)
         
         if prepared.empty:
             logger.warning("No home matches found after filtering.")
             return
         
+        _validate_features(prepared)
         # Generate predictions
         preds, probs = _generate_predictions(model, prepared)
         

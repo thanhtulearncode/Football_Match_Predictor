@@ -3,19 +3,25 @@
  * Centralized API communication logic
  */
 
-const API_BASE = `http://${window.location.hostname}:8080`;
+const API_PORT = import.meta.env.VITE_API_PORT || 8000;
+const API_BASE = `http://${window.location.hostname}:${API_PORT}`;
 
 /**
  * Fetches list of available teams
  * @returns {Promise<string[]>} Array of team names
  */
 export const fetchTeams = async () => {
-  const response = await fetch(`${API_BASE}/teams`);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch teams: ${response.statusText}`);
+  try {
+    const response = await fetch(`${API_BASE}/teams`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch teams: ${response.statusText}`);
+    }
+    const data = await response.json();
+    return data.teams;
+  } catch (error) {
+    console.error("API Connection Error:", error);
+    throw error;
   }
-  const data = await response.json();
-  return data.teams;
 };
 
 /**
@@ -23,12 +29,17 @@ export const fetchTeams = async () => {
  * @returns {Promise<Array>} Array of match predictions
  */
 export const fetchUpcomingMatches = async () => {
-  const response = await fetch(`${API_BASE}/predict/upcoming`);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch matches: ${response.statusText}`);
+  try {
+    const response = await fetch(`${API_BASE}/predict/upcoming`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch matches: ${response.statusText}`);
+    }
+    const data = await response.json();
+    return data.predictions;
+  } catch (error) {
+    console.error("API Connection Error:", error);
+    throw error;
   }
-  const data = await response.json();
-  return data.predictions;
 };
 
 /**
