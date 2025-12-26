@@ -1,6 +1,6 @@
 import pandas as pd
 import logging
-import pandera as pa
+import pandera.pandas as pa
 from sklearn.preprocessing import OrdinalEncoder
 from config.settings import settings
 from src.pipeline.validation import RawMatchSchema

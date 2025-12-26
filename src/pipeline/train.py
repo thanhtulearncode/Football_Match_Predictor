@@ -1,7 +1,7 @@
 import pandas as pd
 import joblib
 import logging
-import pandera as pa
+import pandera.pandas as pa
 from datetime import datetime
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.calibration import CalibratedClassifierCV

@@ -47,10 +47,10 @@ This starts the Prediction API.
 
 ```bash
 # Make sure venv is active
-python -m uvicorn src.api.app:app --reload --port 8080
+python -m uvicorn src.api.app:app --reload --port 8000
 ```
 
-API will run at: http://127.0.0.1:8080
+API will run at: http://127.0.0.1:8000
 
 **Terminal B: The Face (Frontend)**
 This starts the Dashboard.
